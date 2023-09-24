@@ -3,7 +3,7 @@
 #[ink::contract]
 mod freelancer { 
  
-    use ink::{storage::Mapping};
+    use ink::storage::Mapping;
     use ink::prelude::string::String;
     use ink::prelude::vec::Vec;
 
@@ -17,9 +17,8 @@ mod freelancer {
     #[derive(Default)]
     pub struct Freelancer {
         jobs : Mapping<JobId, Job>,
-        owner_job : Mapping<AccountId, JobId>,
+        owner_job : Mapping<(AccountId, OnwerRole), JobId>,
         doing_job: Mapping<AccountId, JobId>,
-
         assigned_job: Mapping<JobId, AccountId>,
         current_job_id: JobId,
     }
@@ -30,7 +29,6 @@ mod freelancer {
         feature = "std",
         derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
     )]
-    
     pub struct Job {
         name: String, 
         description: String,
@@ -50,7 +48,30 @@ mod freelancer {
         DOING, 
         REVIEW, 
         REOPEN, 
-        FINISH
+        FINISH, 
+    }
+
+    #[derive(scale::Decode, scale::Encode, Default, Debug, PartialEq, Clone, Copy)]
+    #[cfg_attr(
+        feature = "std",
+        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+    )]
+    pub enum OnwerRole {
+        #[default]
+        INDIVIDUAL, 
+        ENTERPRISE(OnwerRoleInEnterprise),
+    }
+
+
+    #[derive(scale::Decode, scale::Encode, Default, Debug, PartialEq, Clone, Copy)]
+    #[cfg_attr(
+        feature = "std",
+        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+    )]
+    pub enum OnwerRoleInEnterprise {
+        #[default]
+        TEAMLEAD,
+        ACCOUNTANT, //có thể bổ sung các role khác
     }
 
     #[derive(scale::Decode, scale::Encode)]
@@ -59,7 +80,15 @@ mod freelancer {
         derive(scale_info::TypeInfo)
     )]
     pub enum JobError {
-        JobInvalid
+        CreatedJob,
+        NotExisted, // Job không tồn tại
+        Taked, //đã có người nhận
+        NotTakeThisJob,
+        Submited, //đã submit 
+        Proccesing, //đang có người làm
+        CurrentJobIncomplete, //hoàn thành job hiện tại đã
+        JobInvalid,
+        Finish, //job đã hoàn thành
     }
 
 
@@ -71,7 +100,7 @@ mod freelancer {
         }
 
         #[ink(message, payable)]
-        pub fn create(&mut self, name: String, description: String) {
+        pub fn create(&mut self, name: String, description: String, role: OnwerRole) -> Result<(), JobError> {
             let budget = self.env().transferred_value();
             let caller = self.env().caller();
 
@@ -82,49 +111,59 @@ mod freelancer {
                 status: Status::default(),
                 result: None
             };
-
-            self.jobs.insert(self.current_job_id, &job);
-            self.owner_job.insert(caller, &self.current_job_id);
-            self.current_job_id = self.current_job_id + 1;
+            // mỗi tài khoản chỉ push 1 công việc
+            if self.owner_job.get((caller, role.clone())).is_some() {return Err(JobError::CreatedJob)}; 
+            // job đầu đánh số 0, các job tiếp theo thì cộng 1 vào
+            self.jobs.insert(self.current_job_id, &job); 
+            self.owner_job.insert((caller, role), &self.current_job_id);
+            self.current_job_id = self.current_job_id + 1; 
+            
+            Ok(())
 
         }
 
-
+        // có thể tùy chỉnh thêm lọc công việc theo status hoặc theo owner hoặc theo freelancer
+        // freelancer có thể apply job open va reopen
         #[ink(message)]
-        pub fn get_open_jobs(&self) -> Vec<Job> {
+        pub fn get_jobs_with_status (&self, status: Status, owner: Option<AccountId>) -> Vec<Job> {
             let mut jobs = Vec::new();
             for index in 0..self.current_job_id {
                 let job = self.jobs.get(index).unwrap();
-                if job.status == Status::OPEN {
+                if job.status == status {
                     jobs.push(self.jobs.get(index).unwrap());
                 }
-            }
-
+            };
             jobs
         }
         
         #[ink(message)]
         pub fn obtain(&mut self, job_id: JobId) -> Result<(), JobError>{
+            // kiểm tra id job có lớn hơn hoặc curren_id hay không (curren_id là id của job tiếp theo)
+            if job_id >= self.current_job_id {return Err(JobError::NotExisted)};
+
             let caller = self.env().caller();
 
             // check job assigned or not
             let a = self.assigned_job.get(job_id);
 
-            if a == None {
-                return Err(JobError::JobInvalid)
+            //Chỗ này cần chỉnh lại là is_some
+            if a.is_some() {
+                return Err(JobError::Proccesing)
             }
                 
             // check caller doing job or not
             let doing_job = self.doing_job.get(caller); 
-            if doing_job == None {
-                return Err(JobError::JobInvalid)
+            if doing_job.is_some() {
+                return Err(JobError::CurrentJobIncomplete)
             }
 
             // update job status
             let mut job = self.jobs.get(job_id).unwrap(); 
-            assert_eq!(job.status, Status::OPEN, "");
 
-            if job.status == Status::OPEN {
+            
+            // assert!(job.status==Status::OPEN || job.status==Status::REOPEN);
+            // Kiểm tra trạng thái open hay reopen;
+            if job.status != Status::OPEN && job.status != Status::REOPEN {
                 return Err(JobError::JobInvalid)
             }
 
@@ -134,6 +173,9 @@ mod freelancer {
             self.assigned_job.insert(job_id, &caller);
             // insert doing_job
             self.doing_job.insert(caller, &job_id);
+            
+            // chỉnh lại trạng thái job
+            self.jobs.insert(job_id, &job);
 
             Ok(())
 
@@ -142,99 +184,123 @@ mod freelancer {
 
 
         #[ink(message)]
-        pub fn submit(&self, job_id: JobId, result: String) {
+        pub fn submit(&mut self, job_id: JobId, result: String) -> Result<(), JobError>{
+            // kiểm tra id job có lớn hơn hoặc curren_id hay không (curren_id là id của job tiếp theo)
+            if job_id >= self.current_job_id {return Err(JobError::NotExisted)};
 
-            // check exits job or not
+            let caller = self.env().caller();
+            // kiểm tra người đó có apply job đó hay không, không cần kiểm tra none vì job <= current_id
+            if self.assigned_job.get(job_id) == None || self.assigned_job.get(job_id).unwrap() != caller {return Err(JobError::NotTakeThisJob)};
 
-            // check freelancer doing the job id or not 
+            let mut job = self.jobs.get(job_id).unwrap();
+            //job phải ở trạng thái doing mới submit được
+            if job.status == Status::DOING || job.status == Status::REOPEN {
+                job.result = Some(result);
 
-            // 
+                job.status = Status::REVIEW;
+
+                self.jobs.insert(job_id, &job);
+            } else if job.status == Status::REVIEW {
+                return Err(JobError::Submited)
+            } else {
+                return Err(JobError::Finish)
+            }
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn reject(&mut self, job_id: JobId, role: OnwerRole) -> Result<(), JobError>{
+
+            // kiểm tra id job có lớn hơn curren_id hay không
+            if job_id >= self.current_job_id {return Err(JobError::NotExisted)};
+
+            let caller = self.env().caller();
+            // kiểm tra người đó có phải là giao job đó hay không, không cần kiểm tra none vì job <= current_id
+            if self.owner_job.get((caller, role)) == None ||
+            self.owner_job.get((caller, role)).unwrap() != job_id {
+                return Err(JobError::NotExisted)
+            };
+
+            let mut job = self.jobs.get(job_id).unwrap();
+            //job phải ở trạng thái review mới reject được
+            if job.status == Status::REVIEW {
+
+                job.status = Status::REOPEN;
+
+                // xóa kết quả của người làm trước
+                job.result = None;
+
+                self.jobs.insert(job_id, &job);
+            } else if job.status == Status::DOING || job.status == Status::REOPEN {
+                return Err(JobError::Proccesing)
+            } else {
+                return Err(JobError::Finish)
+            }
+
+            Ok(())
 
         }
 
         #[ink(message)]
-        pub fn reject(&self, job_id: JobId) {}
+        pub fn aproval(&mut self, job_id: JobId, role: OnwerRole) -> Result<(), JobError>{
+            if job_id >= self.current_job_id {return Err(JobError::NotExisted)};
 
-        #[ink(message)]
-        pub fn aproval(&self, job_id: JobId) {}
+            let caller = self.env().caller();
+            // kiểm tra người đó có phải là giao job đó hay không, không cần kiểm tra none vì job <= current_id
+            if self.owner_job.get((caller, role)) == None ||
+            self.owner_job.get((caller, role)).unwrap() != job_id {
+                return Err(JobError::NotExisted)
+            };
 
+            let mut job = self.jobs.get(job_id).unwrap();
+            //job phải ở trạng thái review mới reject được
+            if job.status == Status::REVIEW {
 
- 
+                // chỉnh và update trạng thái finish của job
+                job.status = Status::FINISH;
+                self.jobs.insert(job_id, &job);
+
+                //remove để có thể up việc mới và freelancer có thể nhận việc mới
+                self.owner_job.remove((caller, role));
+                let freelancer = self.assigned_job.get(job_id).unwrap();
+                self.doing_job.remove(freelancer);
+            } else if job.status == Status::DOING || job.status == Status::REOPEN {
+                return Err(JobError::Proccesing)
+            } else {
+                return Err(JobError::Finish)
+            }
+            // chuyển tiền cho người nhận.
+            self.env().transfer(self.assigned_job.get(job_id).unwrap(), job.budget);
+            Ok(())
+        }        
     }
 
 
 
-
-    /// This is how you'd write end-to-end (E2E) or integration tests for ink! contracts.
-    ///
-    /// When running these you need to make sure that you:
-    /// - Compile the tests with the `e2e-tests` feature flag enabled (`--features e2e-tests`)
-    /// - Are running a Substrate node which contains `pallet-contracts` in the background
-    #[cfg(all(test, feature = "e2e-tests"))]
-    mod e2e_tests {
-        /// Imports all the definitions from the outer scope so we can use them here.
+    // viết test
+    #[cfg(test)]
+    mod tests {
         use super::*;
 
-        /// A helper function used for calling contract messages.
-        use ink_e2e::build_message;
+        #[ink::test]
+        fn new_works() {
+            let mut new_freelancer = Freelancer::new();
+            assert_eq!(new_freelancer.current_job_id, 0);
+            
+            // role cá nhân hoặc role doanh nghiệp
+            let individual_role = OnwerRole::INDIVIDUAL;
+            // let enterprise_role =OnwerRole::ENTERPRISE(OnwerRoleInEnterprise::TEAMLEAD);
 
-        /// The End-to-End test `Result` type.
-        type E2EResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-        /// We test that we can upload and instantiate the contract using its default constructor.
-        #[ink_e2e::test]
-        async fn default_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // Given
-            let constructor = HelloInkRef::default();
+            new_freelancer.create("TaskOne".to_string(), "Submit on one week".to_string(), individual_role);
+            assert_eq!(new_freelancer.current_job_id, 1);
+            assert_eq!(new_freelancer.jobs.get(1).unwrap().name, "TaskOne".to_string());
+            assert_eq!(new_freelancer.jobs.get(1).unwrap().description, "Submit on one week".to_string());
+            assert_eq!(new_freelancer.jobs.get(1).unwrap().result, None);
+            assert_eq!(new_freelancer.jobs.get(1).unwrap().status, Status::OPEN);
+            assert_eq!(new_freelancer.jobs.get(1).unwrap().budget, 0); //buget khi đưa vào mặc định là 0
+            
 
-            // When
-            let contract_account_id = client
-                .instantiate("hello_ink", &ink_e2e::alice(), constructor, 0, None)
-                .await
-                .expect("instantiate failed")
-                .account_id;
-
-            // Then
-            let get = build_message::<HelloInkRef>(contract_account_id.clone())
-                .call(|hello_ink| hello_ink.get());
-            let get_result = client.call_dry_run(&ink_e2e::alice(), &get, 0, None).await;
-            assert!(matches!(get_result.return_value(), false));
-
-            Ok(())
-        }
-
-        /// We test that we can read and write a value from the on-chain contract contract.
-        #[ink_e2e::test]
-        async fn it_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // Given
-            let constructor = HelloInkRef::new(false);
-            let contract_account_id = client
-                .instantiate("hello_ink", &ink_e2e::bob(), constructor, 0, None)
-                .await
-                .expect("instantiate failed")
-                .account_id;
-
-            let get = build_message::<HelloInkRef>(contract_account_id.clone())
-                .call(|hello_ink| hello_ink.get());
-            let get_result = client.call_dry_run(&ink_e2e::bob(), &get, 0, None).await;
-            assert!(matches!(get_result.return_value(), false));
-
-            // When
-            let flip = build_message::<HelloInkRef>(contract_account_id.clone())
-                .call(|hello_ink| hello_ink.flip());
-            let _flip_result = client
-                .call(&ink_e2e::bob(), flip, 0, None)
-                .await
-                .expect("flip failed");
-
-            // Then
-            let get = build_message::<HelloInkRef>(contract_account_id.clone())
-                .call(|hello_ink| hello_ink.get());
-            let get_result = client.call_dry_run(&ink_e2e::bob(), &get, 0, None).await;
-            assert!(matches!(get_result.return_value(), true));
-
-            Ok(())
         }
     }
- 
 }
