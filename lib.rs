@@ -253,7 +253,7 @@ mod freelancer {
             };
 
             let mut job = self.jobs.get(job_id).unwrap();
-            //job phải ở trạng thái review mới reject được
+            //job phải ở trạng thái review mới finish được
             if job.status == Status::REVIEW {
 
                 // chỉnh và update trạng thái finish của job
