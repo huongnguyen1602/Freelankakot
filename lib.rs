@@ -318,7 +318,6 @@ mod freelancer {
                 Status::FINISH => return Err(JobError::Finish),
                 Status::REVIEW => {
                     job.status = Status::FINISH;
-                    // xóa kết quả của người làm trước
                     self.jobs.insert(job_id, &job);
                     //xóa người đang làm job để có thể nhận job mới
                     let freelancer = self.assigned_job.get(job_id).unwrap();
