@@ -9,10 +9,6 @@ mod freelancer {
 
     pub type JobId = u128;
 
-
-    /// Defines the storage of your contract.
-    /// Add new fields to the below struct in order
-    /// to add new static storage fields to your contract.
     #[ink(storage)]
     #[derive(Default)]
     pub struct Freelancer {
@@ -21,7 +17,10 @@ mod freelancer {
         doing_job: Mapping<AccountId, JobId>,
         assigned_job: Mapping<JobId, AccountId>,
         current_job_id: JobId,
-        account_role: Mapping<AccountId, AccountRole>
+        account_role: Mapping<AccountId, AccountRole>, //bỏ cái này vì trong personal account đã có thông tin rồi
+        personal_account_info: Mapping<AccountId, UserInfo>,
+        all_created_projects: Mapping<AccountId, Vec<(JobId, Status)>>,
+        all_obtain: Mapping<AccountId, Vec<(JobId, Status)>>
     }
 
 
@@ -36,7 +35,9 @@ mod freelancer {
         result: Option<String>,
         status: Status,
         budget: Balance,
-        // fee: Balance, //Phí để up việc
+        // fee_percentage: Balance, //Phí để up việc
+        // duration: BlockNumber,
+        // dealine: Option<BlockNumber>, 
     }
 
     #[derive(scale::Decode, scale::Encode, Default, Debug, PartialEq)]
@@ -77,6 +78,22 @@ mod freelancer {
         ACCOUNTANT, //có thể bổ sung các role khác
     }
 
+
+    #[derive(scale::Decode, scale::Encode, Default, Debug)]
+    #[cfg_attr(
+        feature = "std",
+        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+    )]
+    pub struct UserInfo{
+        name: String,
+        detail: String, //liên kết đến IPFS lưu trữ thông tin cá nhân
+        role: AccountRole, // vai trò
+        rating_points: u32, // điểm dánh giá
+    }
+
+
+    
+
     #[derive(scale::Decode, scale::Encode)]
     #[cfg_attr(
         feature = "std",
@@ -108,7 +125,7 @@ mod freelancer {
             Self::default()
         }
 
-        #[ink(message, payable)]
+        #[ink(message)]
         pub fn register(&mut self, role: AccountRole) -> Result<(), JobError>{
             let caller = self.env().caller();
             match self.account_role.get(caller) {
@@ -330,7 +347,12 @@ mod freelancer {
             }
 
             Ok(())
-        }        
+        } 
+
+        #[ink(message)]
+        pub fn check_balance_of_contract(&self) -> Balance {
+            self.env().balance()
+        }
     }
 
 
