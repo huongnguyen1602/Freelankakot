@@ -12,13 +12,14 @@ mod freelancer {
     #[ink(storage)]
     #[derive(Default)]
     pub struct Freelancer {
-        jobs : Mapping<JobId, Job>,
+        jobs : Mapping<JobId, Job>, //map jobID đến job: luôn là trạng thái cuối cùng của job, như vậy job reopen sẽ ko lưu người làm trước, phần đó lưu trong unsuccessful_job kèm đánh giá
         current_job_id: JobId,
         personal_account_info: Mapping<AccountId, UserInfo>,
         owner_jobs : Mapping<AccountId, Vec<JobId>>,
         freelancer_jobs: Mapping<AccountId, Vec<JobId>>,
-        successful_jobs: Mapping<(AccountId, JobId), Option<String>>, //Option<String> là review có thể là string review hoặc là link đến ipfs
-        unsuccesful_jobs: Mapping<(AccountId, JobId), Option<String>>   //Option<String> là report có thể là string nhận xét hoặc là link đến ipfs
+        successful_jobs: Mapping<(AccountId, JobId), Option<String>>, //(AccountId: người tạo job, jobID) => Option<String> là review có thể là string review hoặc là link đến ipfs (do freelancer và người giao việc đánh giá)
+        unsuccesful_jobs: Mapping<(AccountId, JobId), Option<String>>   //(AccountId: người tạo job, jobID) => Option<String> là report có thể là string nhận xét hoặc là link đến ipfs (do freelancer và người giao việc đánh giá)
+        // còn phần đánh giá cá nhân thông qua raiting point trong user_info
     }
 
 
@@ -35,7 +36,7 @@ mod freelancer {
         budget: Balance,
         fee_percentage: u8, //Phần trăm tiền phí
         start_time: Timestamp, //thời gian bắt đầu tính từ lúc khởi tạo công việc
-        end_time: Timestamp, //thời gian kết thúc = thời gian bắt đầu + duration người dùng nhập
+        end_time: Timestamp, //thời gian kết thúc = thời gian bắt đầu + duration người dùng nhập sẽ tính bằng ngày.
         person_create: Option<AccountId>, // vì có trait default nên để option cho dễ
         person_obtain: Option<AccountId>
     }
@@ -90,7 +91,7 @@ mod freelancer {
         name: String,
         detail: String, //liên kết đến IPFS lưu trữ thông tin cá nhân
         role: AccountRole, // vai trò
-        successful_jobs_and_all_jobs: (u32, u32),
+        successful_jobs_and_all_jobs: (u32, u32), //số lượng công việc thành công trên số lượng công việc đã tạo (client) hoặc đã nhận (freelancer).
         rating_points: i32, // điểm dánh giá có thể âm nên để i32
     }
 
@@ -122,7 +123,6 @@ mod freelancer {
         Submited, //đã submit 
         Proccesing, //đang có người làm
         CurrentJobIncomplete, //hoàn thành job hiện tại đã
-        JobInvalid,
         Finish, //job đã kết thúc (hoàn thành hoặc bị hủy)
     }
 
@@ -178,10 +178,10 @@ mod freelancer {
         #[ink(message)]
         pub fn show_detail_job_of_id(&self, job_id: JobId) -> Option<Job> {
             self.jobs.get(job_id)
-        } 
+        }
 
         #[ink(message, payable)]
-        pub fn create(&mut self, name: String, description: String, duration: Timestamp) -> Result<(), JobError> {
+        pub fn create(&mut self, name: String, description: String, duration: u64) -> Result<(), JobError> { //duration là nhập số ngày chú ý timestamp tính theo mili giây
             let caller = self.env().caller();
             let caller_info = self.personal_account_info.get(caller);
             match caller_info.clone() {
@@ -200,7 +200,7 @@ mod freelancer {
                 budget: budget,
                 fee_percentage: FEE_PERCENTAGE,
                 start_time: start_time,
-                end_time: start_time + duration,
+                end_time: start_time + duration * 24 * 60 * 60 * 1000,
                 person_create: Some(caller),
                 person_obtain: None,
             };
